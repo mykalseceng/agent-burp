@@ -1,0 +1,4 @@
+/agent-burp
+.DS_Store
+*.log
+*.sock
