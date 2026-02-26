@@ -1,19 +1,32 @@
 # agent-burp
 
-`agent-burp` is a standalone CLI for driving Burp Suite through your BurpMCP extension bridge. It is built for:
+`agent-burp` is a standalone CLI for driving Burp Suite through the [BurpMCP extension bridge](https://github.com/mykalseceng/burp-mcp-claude-code).
+
+The goal is direct LLM-to-Burp execution through a stable CLI contract, without an MCP server translation layer in the middle.
+
+It is built for:
 
 - any LLM that can run shell commands
 - plain Bash scripts and CI
 - local, deterministic JSON output (`--json`)
 
+## Why CLI-first (no MCP middle layer)
+
+- This follows the same practical direction as [Vercel's agent-browser](https://github.com/vercel-labs/agent-browser): make a native CLI that AI agents can call directly.
+- LLMs already know how to call shell tools; CLIs are agent-native.
+- No MCP server process means fewer moving parts and less protocol overhead.
+- Large traffic/results can stay on disk or in Burp state instead of bloating model context.
+- The same command surface works for agents, humans, and CI pipelines.
+- JSON output keeps tool calls deterministic and composable in larger automations.
+
 ## Architecture
 
-`agent-burp` uses a client-daemon model:
+`agent-burp` uses a local client-daemon model (still no MCP server required):
 
 1. CLI command parses/validates args.
 2. CLI talks to local daemon over Unix socket.
 3. Daemon keeps a persistent WebSocket connection to Burp extension (`ws://127.0.0.1:8198` by default).
-4. Daemon sends JSON-RPC methods (`send_request`, `get_proxy_history`, etc.).
+4. Daemon sends JSON-RPC methods directly to the Burp extension (`send_request`, `get_proxy_history`, etc.).
 
 ## Build
 
