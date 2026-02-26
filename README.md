@@ -23,6 +23,27 @@ go mod tidy
 go build -o agent-burp ./cmd/agent-burp
 ```
 
+## Install (macOS)
+
+Install globally so `agent-burp` can be run from any directory:
+
+```bash
+cd /path/to/agent-burp
+./install.sh
+```
+
+Optional custom install dir (no default path change):
+
+```bash
+TARGET_DIR="$HOME/.local/bin" ./install.sh
+```
+
+Uninstall:
+
+```bash
+./uninstall.sh
+```
+
 ## Quick start
 
 ```bash
