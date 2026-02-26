@@ -18,6 +18,7 @@ It is built for:
 - Large traffic/results can stay on disk or in Burp state instead of bloating model context.
 - The same command surface works for agents, humans, and CI pipelines.
 - JSON output keeps tool calls deterministic and composable in larger automations.
+- **This is still experimental research: large tool outputs can still blow the model context window, and this setup is intentionally being iterated for token-efficiency tradeoffs.**
 
 ## Architecture
 
