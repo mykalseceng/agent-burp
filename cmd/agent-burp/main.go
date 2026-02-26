@@ -47,6 +47,14 @@ func (h *headerFlags) Set(v string) error {
 	return nil
 }
 
+type kvFlags []string
+
+func (k *kvFlags) String() string { return strings.Join(*k, ",") }
+func (k *kvFlags) Set(v string) error {
+	*k = append(*k, v)
+	return nil
+}
+
 func main() {
 	start := time.Now()
 	err := run(start)
@@ -125,6 +133,18 @@ func run(start time.Time) error {
 		return runClose(cfg, jsonMode, start)
 	case "request":
 		return runRequest(cfg, sub, jsonMode, start)
+	case "http1":
+		return runHTTP1(cfg, sub, jsonMode, start)
+	case "http2":
+		return runHTTP2(cfg, sub, jsonMode, start)
+	case "editor":
+		return runEditor(cfg, sub, jsonMode, start)
+	case "runtime":
+		return runRuntime(cfg, sub, jsonMode, start)
+	case "transform":
+		return runTransform(cfg, sub, jsonMode, start)
+	case "ws-history":
+		return runWSHistory(cfg, sub, jsonMode, start)
 	case "job":
 		return runJob(cfg, sub, jsonMode, start)
 	case "crawl":
@@ -381,6 +401,282 @@ func runRequest(cfg config.Config, args []string, jsonMode bool, start time.Time
 		return err
 	}
 	return printSuccess(jsonMode, "request", redactSensitive(data), start)
+}
+
+func runHTTP1(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
+	fs := flag.NewFlagSet("http1", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var host, req, reqFile string
+	var port int
+	var https, reqStdin bool
+	fs.StringVar(&host, "host", "", "target hostname")
+	fs.IntVar(&port, "port", 443, "target port")
+	fs.BoolVar(&https, "https", true, "use HTTPS")
+	fs.StringVar(&req, "request", "", "raw HTTP request")
+	fs.StringVar(&reqFile, "request-file", "", "path to raw HTTP request")
+	fs.BoolVar(&reqStdin, "request-stdin", false, "read raw HTTP request from stdin")
+	if err := fs.Parse(args); err != nil {
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+	}
+	if host == "" {
+		return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: "--host required"}
+	}
+
+	content, err := readInputSource(req, reqFile, reqStdin)
+	if err != nil {
+		return err
+	}
+
+	data, callErr := callBurp(cfg, "send_http1_request", map[string]any{
+		"targetHostname": host,
+		"targetPort":     port,
+		"usesHttps":      https,
+		"content":        content,
+	})
+	if callErr != nil {
+		return callErr
+	}
+	return printSuccess(jsonMode, "http1", redactSensitive(data), start)
+}
+
+func runHTTP2(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
+	fs := flag.NewFlagSet("http2", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var host, body, bodyFile string
+	var port int
+	var https, bodyStdin bool
+	var pseudoHeaders kvFlags
+	var headers kvFlags
+	fs.StringVar(&host, "host", "", "target hostname")
+	fs.IntVar(&port, "port", 443, "target port")
+	fs.BoolVar(&https, "https", true, "use HTTPS")
+	fs.Var(&pseudoHeaders, "pseudo", "pseudo header key:value (repeatable)")
+	fs.Var(&headers, "header", "header key:value (repeatable)")
+	fs.StringVar(&body, "body", "", "request body")
+	fs.StringVar(&bodyFile, "body-file", "", "request body file")
+	fs.BoolVar(&bodyStdin, "body-stdin", false, "read body from stdin")
+	if err := fs.Parse(args); err != nil {
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+	}
+	if host == "" {
+		return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: "--host required"}
+	}
+
+	bodySources := 0
+	for _, on := range []bool{body != "", bodyFile != "", bodyStdin} {
+		if on {
+			bodySources++
+		}
+	}
+	if bodySources > 1 {
+		return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: "only one of --body, --body-file, --body-stdin is allowed"}
+	}
+	if bodyFile != "" {
+		b, err := os.ReadFile(bodyFile)
+		if err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "IO_ERROR", Message: err.Error()}
+		}
+		body = string(b)
+	}
+	if bodyStdin {
+		b, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "IO_ERROR", Message: err.Error()}
+		}
+		body = string(b)
+	}
+
+	pseudoMap, err := parseKeyValuePairs(pseudoHeaders)
+	if err != nil {
+		return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: err.Error()}
+	}
+	hdrMap, err := parseKeyValuePairs(headers)
+	if err != nil {
+		return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: err.Error()}
+	}
+
+	data, callErr := callBurp(cfg, "send_http2_request", map[string]any{
+		"targetHostname": host,
+		"targetPort":     port,
+		"usesHttps":      https,
+		"pseudoHeaders":  pseudoMap,
+		"headers":        hdrMap,
+		"requestBody":    body,
+	})
+	if callErr != nil {
+		return callErr
+	}
+	return printSuccess(jsonMode, "http2", redactSensitive(data), start)
+}
+
+func runEditor(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
+	if len(args) == 0 {
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "editor subcommand required: get|set"}
+	}
+	switch args[0] {
+	case "get":
+		data, err := callBurp(cfg, "get_active_editor_contents", map[string]any{})
+		if err != nil {
+			return err
+		}
+		return printSuccess(jsonMode, "editor get", data, start)
+	case "set":
+		fs := flag.NewFlagSet("editor set", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		var text string
+		var stdin bool
+		fs.StringVar(&text, "text", "", "editor text")
+		fs.BoolVar(&stdin, "stdin", false, "read text from stdin")
+		if err := fs.Parse(args[1:]); err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+		}
+		if stdin {
+			b, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return &appError{ExitCode: exitBadArgs, Code: "IO_ERROR", Message: err.Error()}
+			}
+			text = string(b)
+		}
+		if text == "" {
+			return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: "--text or --stdin required"}
+		}
+		data, err := callBurp(cfg, "set_active_editor_contents", map[string]any{"text": text})
+		if err != nil {
+			return err
+		}
+		return printSuccess(jsonMode, "editor set", data, start)
+	default:
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "unknown editor subcommand: " + args[0]}
+	}
+}
+
+func runRuntime(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
+	if len(args) == 0 {
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "runtime subcommand required: task-engine|intercept"}
+	}
+	switch args[0] {
+	case "task-engine":
+		fs := flag.NewFlagSet("runtime task-engine", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		var runningRaw string
+		fs.StringVar(&runningRaw, "running", "true", "set running state (true|false)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+		}
+		running, err := parseBoolString(runningRaw)
+		if err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: err.Error()}
+		}
+		data, err := callBurp(cfg, "set_task_execution_engine_state", map[string]any{"running": running})
+		if err != nil {
+			return err
+		}
+		return printSuccess(jsonMode, "runtime task-engine", data, start)
+	case "intercept":
+		fs := flag.NewFlagSet("runtime intercept", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		var onRaw string
+		fs.StringVar(&onRaw, "on", "true", "enable or disable intercept (true|false)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+		}
+		on, err := parseBoolString(onRaw)
+		if err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: err.Error()}
+		}
+		data, err := callBurp(cfg, "set_proxy_intercept_state", map[string]any{"intercepting": on})
+		if err != nil {
+			return err
+		}
+		return printSuccess(jsonMode, "runtime intercept", data, start)
+	default:
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "unknown runtime subcommand: " + args[0]}
+	}
+}
+
+func runTransform(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
+	if len(args) == 0 {
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "transform subcommand required: url-encode|url-decode|base64-encode|base64-decode|random"}
+	}
+	switch args[0] {
+	case "url-encode", "url-decode", "base64-encode", "base64-decode":
+		fs := flag.NewFlagSet("transform", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		var content string
+		var stdin bool
+		fs.StringVar(&content, "content", "", "input content")
+		fs.BoolVar(&stdin, "stdin", false, "read input from stdin")
+		if err := fs.Parse(args[1:]); err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+		}
+		if stdin {
+			b, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return &appError{ExitCode: exitBadArgs, Code: "IO_ERROR", Message: err.Error()}
+			}
+			content = string(b)
+		}
+		if content == "" {
+			return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: "--content or --stdin required"}
+		}
+
+		method := map[string]string{
+			"url-encode":    "url_encode",
+			"url-decode":    "url_decode",
+			"base64-encode": "base64_encode",
+			"base64-decode": "base64_decode",
+		}[args[0]]
+
+		data, err := callBurp(cfg, method, map[string]any{"content": content})
+		if err != nil {
+			return err
+		}
+		return printSuccess(jsonMode, "transform "+args[0], data, start)
+	case "random":
+		fs := flag.NewFlagSet("transform random", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		var length int
+		var characterSet string
+		fs.IntVar(&length, "length", 16, "string length")
+		fs.StringVar(&characterSet, "charset", "ALPHANUMERIC", "character set")
+		if err := fs.Parse(args[1:]); err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+		}
+		data, err := callBurp(cfg, "generate_random_string", map[string]any{"length": length, "characterSet": characterSet})
+		if err != nil {
+			return err
+		}
+		return printSuccess(jsonMode, "transform random", data, start)
+	default:
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "unknown transform subcommand: " + args[0]}
+	}
+}
+
+func runWSHistory(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
+	fs := flag.NewFlagSet("ws-history", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var regex string
+	var limit, offset int
+	fs.StringVar(&regex, "regex", "", "regex filter")
+	fs.IntVar(&limit, "limit", 50, "max items")
+	fs.IntVar(&offset, "offset", 0, "offset")
+	if err := fs.Parse(args); err != nil {
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+	}
+
+	if regex == "" {
+		data, err := callBurp(cfg, "get_proxy_websocket_history", map[string]any{"limit": limit, "offset": offset})
+		if err != nil {
+			return err
+		}
+		return printSuccess(jsonMode, "ws-history", data, start)
+	}
+
+	data, err := callBurp(cfg, "get_proxy_websocket_history_regex", map[string]any{"regex": regex, "limit": limit, "offset": offset})
+	if err != nil {
+		return err
+	}
+	return printSuccess(jsonMode, "ws-history", data, start)
 }
 
 func runHistory(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
@@ -873,6 +1169,65 @@ func parseHeaders(values []string) (map[string]string, error) {
 	return out, nil
 }
 
+func parseKeyValuePairs(values []string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, item := range values {
+		parts := strings.SplitN(item, ":", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid key:value format: %s", item)
+		}
+		k := strings.TrimSpace(parts[0])
+		v := strings.TrimSpace(parts[1])
+		if k == "" {
+			return nil, fmt.Errorf("invalid key in: %s", item)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+func readInputSource(raw, filePath string, fromStdin bool) (string, error) {
+	sources := 0
+	for _, on := range []bool{raw != "", filePath != "", fromStdin} {
+		if on {
+			sources++
+		}
+	}
+	if sources == 0 {
+		return "", &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: "provide one of --request, --request-file, --request-stdin"}
+	}
+	if sources > 1 {
+		return "", &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: "request input sources are mutually exclusive"}
+	}
+	if raw != "" {
+		return raw, nil
+	}
+	if filePath != "" {
+		b, err := os.ReadFile(filePath)
+		if err != nil {
+			return "", &appError{ExitCode: exitBadArgs, Code: "IO_ERROR", Message: err.Error()}
+		}
+		return string(b), nil
+	}
+	b, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return "", &appError{ExitCode: exitBadArgs, Code: "IO_ERROR", Message: err.Error()}
+	}
+	return string(b), nil
+}
+
+func parseBoolString(value string) (bool, error) {
+	v := strings.ToLower(strings.TrimSpace(value))
+	switch v {
+	case "true", "1", "yes", "on", "enabled":
+		return true, nil
+	case "false", "0", "no", "off", "disabled":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid boolean value: %s", value)
+	}
+}
+
 func parseRawRequestCommand(name string, args []string) (map[string]any, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -1204,6 +1559,12 @@ Commands:
   open
   close
   request
+  http1
+  http2
+  transform url-encode|url-decode|base64-encode|base64-decode|random
+  ws-history [--regex]
+  editor get|set
+  runtime task-engine|intercept
   job status|list|cancel
   crawl start
   export start

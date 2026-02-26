@@ -72,6 +72,12 @@ Env vars:
 - `open`
 - `close`
 - `request`
+- `http1`
+- `http2`
+- `transform url-encode|url-decode|base64-encode|base64-decode|random`
+- `ws-history [--regex]`
+- `editor get|set`
+- `runtime task-engine|intercept`
 - `job status|list|cancel`
 - `crawl start`
 - `export start`
