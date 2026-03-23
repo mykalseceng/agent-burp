@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 )
 
 const (
+	version        = "1.0.0"
 	exitOK         = 0
 	exitBadArgs    = 2
 	exitConnect    = 3
@@ -155,6 +157,10 @@ func run(start time.Time) error {
 		return runReplay(cfg, sub, jsonMode, start)
 	case "events":
 		return runEvents(cfg, sub, jsonMode, start)
+	case "event-log":
+		return runEventLog(cfg, sub, jsonMode, start)
+	case "diff":
+		return runDiff(cfg, sub, jsonMode, start)
 	case "history":
 		return runHistory(cfg, sub, jsonMode, start)
 	case "sitemap":
@@ -173,6 +179,9 @@ func run(start time.Time) error {
 		return runRPC(cfg, sub, jsonMode, start)
 	case "daemon":
 		return runDaemon(cfg, sub, jsonMode, start)
+	case "version", "--version", "-v":
+		fmt.Println("agent-burp " + version)
+		return nil
 	case "help", "--help", "-h":
 		printUsage()
 		return nil
@@ -299,10 +308,14 @@ func runRequest(cfg config.Config, args []string, jsonMode bool, start time.Time
 	fs.SetOutput(io.Discard)
 	var urlVal, method, body, bodyFile, bodyBase64, contentType, source string
 	var addToSiteMap, bodyStdin, binary bool
+	var fromID int
 	var headers headerFlags
+	var replaceHeaders headerFlags
 	fs.StringVar(&urlVal, "url", "", "target URL")
 	fs.StringVar(&method, "method", "", "HTTP method")
 	fs.Var(&headers, "header", "header K: V")
+	fs.Var(&replaceHeaders, "replace-header", "override header K: V")
+	fs.IntVar(&fromID, "from-id", 0, "replay from proxy history item ID")
 	fs.StringVar(&body, "body", "", "body string")
 	fs.StringVar(&bodyFile, "body-file", "", "body file")
 	fs.BoolVar(&bodyStdin, "body-stdin", false, "read body from stdin")
@@ -315,6 +328,40 @@ func runRequest(cfg config.Config, args []string, jsonMode bool, start time.Time
 	if err := fs.Parse(args); err != nil {
 		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
 	}
+
+	if fromID > 0 {
+		itemData, err := callBurp(cfg, "get_proxy_history_item", map[string]any{"id": fromID})
+		if err != nil {
+			return err
+		}
+		if item, ok := itemData.(map[string]any); ok {
+			if urlVal == "" {
+				if v, ok := item["url"].(string); ok {
+					urlVal = v
+				}
+			}
+			if method == "" {
+				if v, ok := item["method"].(string); ok {
+					method = v
+				}
+			}
+			if body == "" && bodyFile == "" && !bodyStdin && bodyBase64 == "" {
+				if v, ok := item["requestBody"].(string); ok && v != "" {
+					body = v
+				}
+			}
+			if len(headers) == 0 {
+				if hdrs, ok := item["requestHeaders"].(map[string]any); ok {
+					for k, v := range hdrs {
+						if sv, ok := v.(string); ok {
+							headers = append(headers, fmt.Sprintf("%s: %s", k, sv))
+						}
+					}
+				}
+			}
+		}
+	}
+
 	if urlVal == "" {
 		return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: "--url required"}
 	}
@@ -335,6 +382,15 @@ func runRequest(cfg config.Config, args []string, jsonMode bool, start time.Time
 	hdrMap, err := parseHeaders(headers)
 	if err != nil {
 		return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: err.Error()}
+	}
+	if len(replaceHeaders) > 0 {
+		overrides, err := parseHeaders(replaceHeaders)
+		if err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: err.Error()}
+		}
+		for k, v := range overrides {
+			hdrMap[k] = v
+		}
 	}
 
 	if method == "" {
@@ -573,22 +629,30 @@ func runRuntime(cfg config.Config, args []string, jsonMode bool, start time.Time
 		}
 		return printSuccess(jsonMode, "runtime task-engine", data, start)
 	case "intercept":
-		fs := flag.NewFlagSet("runtime intercept", flag.ContinueOnError)
-		fs.SetOutput(io.Discard)
-		var onRaw string
-		fs.StringVar(&onRaw, "on", "true", "enable or disable intercept (true|false)")
-		if err := fs.Parse(args[1:]); err != nil {
-			return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+		sub := args[1:]
+		if len(sub) == 0 {
+			data, err := callBurp(cfg, "get_proxy_intercept_state", map[string]any{})
+			if err != nil {
+				return err
+			}
+			return printSuccess(jsonMode, "runtime intercept", data, start)
 		}
-		on, err := parseBoolString(onRaw)
-		if err != nil {
-			return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: err.Error()}
+		switch strings.ToLower(sub[0]) {
+		case "on":
+			data, err := callBurp(cfg, "set_proxy_intercept_state", map[string]any{"intercepting": true})
+			if err != nil {
+				return err
+			}
+			return printSuccess(jsonMode, "runtime intercept on", data, start)
+		case "off":
+			data, err := callBurp(cfg, "set_proxy_intercept_state", map[string]any{"intercepting": false})
+			if err != nil {
+				return err
+			}
+			return printSuccess(jsonMode, "runtime intercept off", data, start)
+		default:
+			return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "intercept accepts no args, 'on', or 'off'"}
 		}
-		data, err := callBurp(cfg, "set_proxy_intercept_state", map[string]any{"intercepting": on})
-		if err != nil {
-			return err
-		}
-		return printSuccess(jsonMode, "runtime intercept", data, start)
 	default:
 		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "unknown runtime subcommand: " + args[0]}
 	}
@@ -682,12 +746,17 @@ func runWSHistory(cfg config.Config, args []string, jsonMode bool, start time.Ti
 func runHistory(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
 	fs := flag.NewFlagSet("history", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var domain, method string
-	var limit, status int
+	var domain, method, search string
+	var limit, status, maxBody int
+	var compact, headersOnly bool
 	fs.StringVar(&domain, "domain", "", "target domain")
 	fs.IntVar(&limit, "limit", 20, "max records")
 	fs.StringVar(&method, "method", "", "method filter")
 	fs.IntVar(&status, "status", 0, "status filter")
+	fs.BoolVar(&compact, "compact", false, "strip bodies, keep only key fields")
+	fs.BoolVar(&headersOnly, "headers-only", false, "remove request/response bodies")
+	fs.IntVar(&maxBody, "max-body", 0, "truncate bodies to N bytes")
+	fs.StringVar(&search, "search", "", "case-insensitive filter on url/headers/body")
 	if err := fs.Parse(args); err != nil {
 		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
 	}
@@ -705,6 +774,16 @@ func runHistory(cfg config.Config, args []string, jsonMode bool, start time.Time
 	if err != nil {
 		return err
 	}
+
+	if search != "" {
+		data = filterHistoryBySearch(data, search)
+	}
+	if compact {
+		data = compactHistory(data)
+	} else {
+		data = truncateHistoryBodies(data, headersOnly, maxBody)
+	}
+
 	return printSuccess(jsonMode, "history", redactSensitive(data), start)
 }
 
@@ -731,7 +810,7 @@ func runSitemap(cfg config.Config, args []string, jsonMode bool, start time.Time
 
 func runScope(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
 	if len(args) == 0 {
-		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "scope subcommand required: get|add|remove"}
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "scope subcommand required: get|add|remove|suggest"}
 	}
 	switch args[0] {
 	case "get":
@@ -767,6 +846,42 @@ func runScope(cfg config.Config, args []string, jsonMode bool, start time.Time) 
 			return err
 		}
 		return printSuccess(jsonMode, "scope "+args[0], data, start)
+	case "suggest":
+		fs := flag.NewFlagSet("scope suggest", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		if err := fs.Parse(args[1:]); err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+		}
+		smData, err := callBurp(cfg, "get_sitemap", map[string]any{})
+		if err != nil {
+			return err
+		}
+		hosts := extractHostsFromSitemap(smData)
+		var suggestions []map[string]any
+		for _, host := range hosts {
+			scopeData, err := callBurp(cfg, "get_scope", map[string]any{"url": "https://" + host})
+			if err != nil {
+				continue
+			}
+			inScope := false
+			if m, ok := scopeData.(map[string]any); ok {
+				if v, ok := m["inScope"].(bool); ok {
+					inScope = v
+				}
+			}
+			if !inScope {
+				suggestions = append(suggestions, map[string]any{
+					"host":    host,
+					"command": fmt.Sprintf("agent-burp scope add --url https://%s", host),
+				})
+			}
+		}
+		result := map[string]any{
+			"total":       len(hosts),
+			"notInScope":  len(suggestions),
+			"suggestions": suggestions,
+		}
+		return printSuccess(jsonMode, "scope suggest", result, start)
 	default:
 		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "unknown scope subcommand: " + args[0]}
 	}
@@ -1549,6 +1664,275 @@ func extractGlobalArgs(args []string) ([]string, []string) {
 	return globals, rest
 }
 
+func runEventLog(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
+	fs := flag.NewFlagSet("event-log", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var level, search string
+	var limit int
+	fs.StringVar(&level, "level", "", "filter by level (info|error)")
+	fs.IntVar(&limit, "limit", 50, "max entries")
+	fs.StringVar(&search, "search", "", "case-insensitive search")
+	if err := fs.Parse(args); err != nil {
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+	}
+	params := map[string]any{"limit": limit}
+	if level != "" {
+		params["level"] = level
+	}
+	if search != "" {
+		params["search"] = search
+	}
+	data, err := callBurp(cfg, "get_event_log", params)
+	if err != nil {
+		var ae *appError
+		if errors.As(err, &ae) && strings.Contains(ae.Message, "Method not found") {
+			return &appError{
+				ExitCode: exitRPC,
+				Code:     "UNSUPPORTED",
+				Message:  "event-log requires a Burp extension that supports get_event_log",
+			}
+		}
+		return err
+	}
+	return printSuccess(jsonMode, "event-log", data, start)
+}
+
+func runDiff(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
+	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var id1, id2 int
+	fs.IntVar(&id1, "id1", 0, "first history item ID")
+	fs.IntVar(&id2, "id2", 0, "second history item ID")
+	if err := fs.Parse(args); err != nil {
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+	}
+	if id1 == 0 || id2 == 0 {
+		return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: "--id1 and --id2 are required"}
+	}
+
+	data1, err := callBurp(cfg, "get_proxy_history_item", map[string]any{"id": id1})
+	if err != nil {
+		return err
+	}
+	data2, err := callBurp(cfg, "get_proxy_history_item", map[string]any{"id": id2})
+	if err != nil {
+		return err
+	}
+
+	body1 := extractResponseBody(data1)
+	body2 := extractResponseBody(data2)
+	diff := lineDiff(body1, body2)
+
+	result := map[string]any{
+		"id1":  id1,
+		"id2":  id2,
+		"diff": diff,
+	}
+	return printSuccess(jsonMode, "diff", result, start)
+}
+
+func extractResponseBody(data any) string {
+	if m, ok := data.(map[string]any); ok {
+		if v, ok := m["responseBody"].(string); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+func lineDiff(a, b string) string {
+	linesA := strings.Split(a, "\n")
+	linesB := strings.Split(b, "\n")
+
+	var out strings.Builder
+	i, j := 0, 0
+	for i < len(linesA) || j < len(linesB) {
+		if i < len(linesA) && j < len(linesB) {
+			if linesA[i] == linesB[j] {
+				out.WriteString(" " + linesA[i] + "\n")
+				i++
+				j++
+			} else {
+				out.WriteString("-" + linesA[i] + "\n")
+				out.WriteString("+" + linesB[j] + "\n")
+				i++
+				j++
+			}
+		} else if i < len(linesA) {
+			out.WriteString("-" + linesA[i] + "\n")
+			i++
+		} else {
+			out.WriteString("+" + linesB[j] + "\n")
+			j++
+		}
+	}
+	return out.String()
+}
+
+func filterHistoryBySearch(data any, pattern string) any {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return data
+	}
+	requests, ok := m["requests"].([]any)
+	if !ok {
+		return data
+	}
+	lowerPattern := strings.ToLower(pattern)
+	var filtered []any
+	for _, item := range requests {
+		if historyItemMatches(item, lowerPattern) {
+			filtered = append(filtered, item)
+		}
+	}
+	result := make(map[string]any, len(m))
+	for k, v := range m {
+		result[k] = v
+	}
+	result["requests"] = filtered
+	return result
+}
+
+func historyItemMatches(item any, lowerPattern string) bool {
+	rec, ok := item.(map[string]any)
+	if !ok {
+		return false
+	}
+	searchFields := []string{
+		"url", "requestBody", "responseBody",
+		"requestHeaders", "responseHeaders",
+	}
+	for _, field := range searchFields {
+		if v, ok := rec[field]; ok {
+			var text string
+			switch t := v.(type) {
+			case string:
+				text = t
+			default:
+				b, err := json.Marshal(t)
+				if err == nil {
+					text = string(b)
+				}
+			}
+			if strings.Contains(strings.ToLower(text), lowerPattern) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func compactHistory(data any) any {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return data
+	}
+	requests, ok := m["requests"].([]any)
+	if !ok {
+		return data
+	}
+	keepFields := []string{"id", "method", "url", "statusCode", "mimeType", "timestamp"}
+	var compacted []any
+	for _, item := range requests {
+		rec, ok := item.(map[string]any)
+		if !ok {
+			compacted = append(compacted, item)
+			continue
+		}
+		slim := make(map[string]any, len(keepFields))
+		for _, k := range keepFields {
+			if v, ok := rec[k]; ok {
+				slim[k] = v
+			}
+		}
+		compacted = append(compacted, slim)
+	}
+	result := make(map[string]any, len(m))
+	for k, v := range m {
+		result[k] = v
+	}
+	result["requests"] = compacted
+	return result
+}
+
+func truncateHistoryBodies(data any, headersOnly bool, maxBody int) any {
+	if !headersOnly && maxBody <= 0 {
+		return data
+	}
+	m, ok := data.(map[string]any)
+	if !ok {
+		return data
+	}
+	requests, ok := m["requests"].([]any)
+	if !ok {
+		return data
+	}
+	bodyFields := []string{"requestBody", "responseBody"}
+	var processed []any
+	for _, item := range requests {
+		rec, ok := item.(map[string]any)
+		if !ok {
+			processed = append(processed, item)
+			continue
+		}
+		clone := make(map[string]any, len(rec))
+		for k, v := range rec {
+			clone[k] = v
+		}
+		for _, field := range bodyFields {
+			if headersOnly {
+				delete(clone, field)
+			} else if maxBody > 0 {
+				if s, ok := clone[field].(string); ok && len(s) > maxBody {
+					clone[field] = s[:maxBody] + "...<truncated>"
+				}
+			}
+		}
+		processed = append(processed, clone)
+	}
+	result := make(map[string]any, len(m))
+	for k, v := range m {
+		result[k] = v
+	}
+	result["requests"] = processed
+	return result
+}
+
+func extractHostsFromSitemap(data any) []string {
+	hostSet := map[string]bool{}
+	m, ok := data.(map[string]any)
+	if !ok {
+		return nil
+	}
+	// Try common sitemap response shapes: "entries", "items", or top-level array
+	var entries []any
+	if arr, ok := m["entries"].([]any); ok {
+		entries = arr
+	} else if arr, ok := m["items"].([]any); ok {
+		entries = arr
+	}
+	for _, item := range entries {
+		rec, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if u, ok := rec["url"].(string); ok {
+			if parsed, err := url.Parse(u); err == nil && parsed.Hostname() != "" {
+				hostSet[parsed.Hostname()] = true
+			}
+		}
+		if h, ok := rec["host"].(string); ok && h != "" {
+			hostSet[h] = true
+		}
+	}
+	hosts := make([]string, 0, len(hostSet))
+	for h := range hostSet {
+		hosts = append(hosts, h)
+	}
+	sort.Strings(hosts)
+	return hosts
+}
+
 func printUsage() {
 	exe := filepath.Base(os.Args[0])
 	fmt.Printf(`%s - Burp CLI for agents and scripts
@@ -1558,21 +1942,23 @@ Commands:
   capabilities
   open
   close
-  request
+  request [--from-id N] [--replace-header K:V]
   http1
   http2
   transform url-encode|url-decode|base64-encode|base64-decode|random
   ws-history [--regex]
   editor get|set
-  runtime task-engine|intercept
+  runtime task-engine|intercept [on|off]
   job status|list|cancel
   crawl start
   export start
   replay export|run
   events subscribe|unsubscribe|status
-  history
+  event-log [--level info|error] [--limit N] [--search pattern]
+  diff --id1 N --id2 N
+  history [--compact] [--headers-only] [--max-body N] [--search pattern]
   sitemap
-  scope get|add|remove
+  scope get|add|remove|suggest
   repeater
   intruder
   scan start|status|stop
@@ -1587,5 +1973,10 @@ Examples:
   %s open --json
   %s request --url https://example.com/api --method POST --body '{"k":"v"}' --json
   %s history --domain example.com --limit 20 --json
-`, exe, exe, exe, exe)
+  %s runtime intercept off
+  %s history --domain example.com --compact --json
+  %s event-log --level error --json
+  %s diff --id1 10 --id2 15 --json
+  %s scope suggest --json
+`, exe, exe, exe, exe, exe, exe, exe, exe, exe)
 }
