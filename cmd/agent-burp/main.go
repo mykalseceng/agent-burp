@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version        = "1.0.0"
+	version        = "1.4.0"
 	exitOK         = 0
 	exitBadArgs    = 2
 	exitConnect    = 3
@@ -171,6 +171,8 @@ func run(start time.Time) error {
 		return runRepeater(cfg, sub, jsonMode, start)
 	case "intruder":
 		return runIntruder(cfg, sub, jsonMode, start)
+	case "audit":
+		return runAudit(cfg, sub, jsonMode, start)
 	case "scan":
 		return runScan(cfg, sub, jsonMode, start)
 	case "issues":
@@ -911,9 +913,82 @@ func runIntruder(cfg config.Config, args []string, jsonMode bool, start time.Tim
 	return printSuccess(jsonMode, "intruder", data, start)
 }
 
+func runAudit(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
+	if len(args) == 0 {
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "audit subcommand required: start|status|stop"}
+	}
+	switch args[0] {
+	case "start":
+		fs := flag.NewFlagSet("audit start", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		var urlVal, urlPrefix string
+		var fromSitemap bool
+		var maxItems, auditIdleLimit int
+		fs.StringVar(&urlVal, "url", "", "target URL")
+		fs.StringVar(&urlPrefix, "url-prefix", "", "sitemap URL prefix when using --from-sitemap")
+		fs.BoolVar(&fromSitemap, "from-sitemap", false, "audit matching sitemap requests instead of only the seed URL")
+		fs.IntVar(&maxItems, "max-items", 200, "maximum sitemap requests to audit")
+		fs.IntVar(&auditIdleLimit, "audit-idle", 8, "seconds without audit request activity before completion")
+		if err := fs.Parse(args[1:]); err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+		}
+		if urlVal == "" {
+			return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: "--url required"}
+		}
+		params := map[string]any{
+			"url":                   urlVal,
+			"fromSitemap":           fromSitemap,
+			"maxAuditItems":         maxItems,
+			"auditIdleLimitSeconds": auditIdleLimit,
+		}
+		if urlPrefix != "" {
+			params["sitemapPrefix"] = urlPrefix
+		}
+		data, err := callBurp(cfg, "start_audit", params)
+		if err != nil {
+			return err
+		}
+		return printSuccess(jsonMode, "audit start", data, start)
+	case "stop":
+		fs := flag.NewFlagSet("audit stop", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		var id string
+		fs.StringVar(&id, "id", "", "audit ID")
+		if err := fs.Parse(args[1:]); err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+		}
+		if id == "" {
+			return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: "--id required"}
+		}
+		data, err := callBurp(cfg, "stop_audit", map[string]any{"auditId": id})
+		if err != nil {
+			return err
+		}
+		return printSuccess(jsonMode, "audit stop", data, start)
+	case "status":
+		fs := flag.NewFlagSet("audit status", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		var id string
+		fs.StringVar(&id, "id", "", "audit ID")
+		if err := fs.Parse(args[1:]); err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+		}
+		if id == "" {
+			return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: "--id required"}
+		}
+		data, err := callBurp(cfg, "get_audit_status", map[string]any{"auditId": id})
+		if err != nil {
+			return err
+		}
+		return printSuccess(jsonMode, "audit status", data, start)
+	default:
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "unknown audit subcommand: " + args[0]}
+	}
+}
+
 func runScan(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
 	if len(args) == 0 {
-		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "scan subcommand required: start|stop"}
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "scan subcommand required: start|status|stop"}
 	}
 	switch args[0] {
 	case "start":
@@ -921,15 +996,28 @@ func runScan(cfg config.Config, args []string, jsonMode bool, start time.Time) e
 		fs.SetOutput(io.Discard)
 		var urlVal string
 		var crawl bool
+		var maxItems, crawlIdleLimit, crawlMaxRuntime, auditIdleLimit int
 		fs.StringVar(&urlVal, "url", "", "target URL")
-		fs.BoolVar(&crawl, "crawl", false, "enable crawl before audit")
+		fs.BoolVar(&crawl, "crawl", false, "crawl first, then audit matching sitemap requests")
+		fs.IntVar(&maxItems, "max-items", 200, "maximum sitemap requests to audit after crawl")
+		fs.IntVar(&crawlIdleLimit, "crawl-idle", 30, "seconds without crawl request activity before audit")
+		fs.IntVar(&crawlMaxRuntime, "crawl-max-runtime", 300, "maximum crawl runtime in seconds, 0 for no hard limit")
+		fs.IntVar(&auditIdleLimit, "audit-idle", 8, "seconds without audit request activity before completion")
 		if err := fs.Parse(args[1:]); err != nil {
 			return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
 		}
 		if urlVal == "" {
 			return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: "--url required"}
 		}
-		data, err := callBurp(cfg, "start_scan", map[string]any{"url": urlVal, "crawl": crawl})
+		params := map[string]any{
+			"url":                    urlVal,
+			"crawl":                  crawl,
+			"maxAuditItems":          maxItems,
+			"crawlIdleLimitSeconds":  crawlIdleLimit,
+			"crawlMaxRuntimeSeconds": crawlMaxRuntime,
+			"auditIdleLimitSeconds":  auditIdleLimit,
+		}
+		data, err := callBurp(cfg, "start_scan", params)
 		if err != nil {
 			return err
 		}
@@ -1961,6 +2049,7 @@ Commands:
   scope get|add|remove|suggest
   repeater
   intruder
+  audit start|status|stop
   scan start|status|stop
   issues
   rpc <method>

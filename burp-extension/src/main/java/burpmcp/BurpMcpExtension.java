@@ -70,6 +70,9 @@ public class BurpMcpExtension implements BurpExtension {
         messageHandler.registerMethod(new Base64Encode(api));
         messageHandler.registerMethod(new Base64Decode(api));
         messageHandler.registerMethod(new GenerateRandomString(api));
+        messageHandler.registerMethod(new StartAudit(api, jobManager));
+        messageHandler.registerMethod(new GetAuditStatus(jobManager));
+        messageHandler.registerMethod(new StopAudit(jobManager));
         messageHandler.registerMethod(new StartScan(api, jobManager));
         messageHandler.registerMethod(new GetScanStatus(jobManager));
         messageHandler.registerMethod(new StopScan(jobManager));
@@ -95,7 +98,7 @@ public class BurpMcpExtension implements BurpExtension {
         messageHandler.registerMethod(new GetProxyHistoryItem(trafficStore));
         messageHandler.registerMethod(new GetEventLog(eventBus));
         messageHandler.registerMethod(new GetProxyInterceptState(api));
-        api.logging().logToOutput("Registered 35 RPC methods (+3 event subscription RPCs)");
+        api.logging().logToOutput("Registered 38 RPC methods (+3 event subscription RPCs)");
 
         this.wsServer = new WebSocketServer(
             config.getWebSocketPort(),

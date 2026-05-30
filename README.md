@@ -41,7 +41,7 @@ cd /path/to/agent-burp/burp-extension
 The JAR is created at:
 
 ```text
-burp-extension/build/libs/agent-burp-extension-1.3.0.jar
+burp-extension/build/libs/agent-burp-extension-1.4.0.jar
 ```
 
 Build the Go CLI:
@@ -57,7 +57,7 @@ go build -o agent-burp ./cmd/agent-burp
 1. Open Burp Suite.
 2. Go to Extensions > Installed.
 3. Click Add.
-4. Select `burp-extension/build/libs/agent-burp-extension-1.3.0.jar`.
+4. Select `burp-extension/build/libs/agent-burp-extension-1.4.0.jar`.
 5. Confirm the extension output shows `agent-burp extension loaded`.
 
 The extension opens a local WebSocket server on port `8198` by default. The Go daemon connects to that WebSocket directly; the TypeScript MCP server from the original bridge is not part of this repository and is not required.
@@ -148,10 +148,18 @@ Env vars:
 - `scope get|add|remove`
 - `repeater`
 - `intruder`
+- `audit start|status|stop`
 - `scan start|status|stop`
 - `issues`
 - `rpc <method> --params <json|@file>`
 - `daemon run|status|stop|restart|logs`
+
+## Scanner workflow
+
+- `audit start --url <url>` starts an active audit and submits the seed URL as the only base request.
+- `audit start --url <url> --from-sitemap [--url-prefix <prefix>]` starts an active audit from matching Burp sitemap request/response items.
+- `scan start --url <url> --crawl` runs a crawl first, then audits matching sitemap request/response items from the target origin.
+- `crawl start --url <url>` remains discovery only.
 
 ## POST/body handling
 
