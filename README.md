@@ -1,6 +1,6 @@
 # agent-burp
 
-`agent-burp` is a standalone CLI for driving Burp Suite through the [BurpMCP extension bridge](https://github.com/mykalseceng/burp-mcp-claude-code).
+`agent-burp` is a standalone CLI for driving Burp Suite through the bundled Burp extension in `burp-extension/`.
 
 The goal is direct LLM-to-Burp execution through a stable CLI contract, without an MCP server translation layer in the middle.
 
@@ -26,16 +26,41 @@ It is built for:
 
 1. CLI command parses/validates args.
 2. CLI talks to local daemon over Unix socket.
-3. Daemon keeps a persistent WebSocket connection to Burp extension (`ws://127.0.0.1:8198` by default).
+3. Daemon keeps a persistent WebSocket connection to the bundled Burp extension (`ws://127.0.0.1:8198` by default).
 4. Daemon sends JSON-RPC methods directly to the Burp extension (`send_request`, `get_proxy_history`, etc.).
 
 ## Build
+
+Build the Burp extension JAR:
+
+```bash
+cd /path/to/agent-burp/burp-extension
+./gradlew build
+```
+
+The JAR is created at:
+
+```text
+burp-extension/build/libs/agent-burp-extension-1.3.0.jar
+```
+
+Build the Go CLI:
 
 ```bash
 cd /path/to/agent-burp
 go mod tidy
 go build -o agent-burp ./cmd/agent-burp
 ```
+
+## Load Burp Extension
+
+1. Open Burp Suite.
+2. Go to Extensions > Installed.
+3. Click Add.
+4. Select `burp-extension/build/libs/agent-burp-extension-1.3.0.jar`.
+5. Confirm the extension output shows `agent-burp extension loaded`.
+
+The extension opens a local WebSocket server on port `8198` by default. The Go daemon connects to that WebSocket directly; the TypeScript MCP server from the original bridge is not part of this repository and is not required.
 
 ## Install (macOS)
 
