@@ -60,7 +60,7 @@ public class BurpMcpExtension implements BurpExtension {
         }
 
         this.messageHandler = new MessageHandler(eventSubscriptionManager);
-        messageHandler.registerMethod(new GetProxyHistory(trafficStore));
+        messageHandler.registerMethod(new GetProxyHistory(api));
         messageHandler.registerMethod(new GetSitemap(api));
         messageHandler.registerMethod(new SendRequest(api));
         messageHandler.registerMethod(new SendHttp1Request(api));
@@ -95,7 +95,7 @@ public class BurpMcpExtension implements BurpExtension {
         messageHandler.registerMethod(new GetCapabilities(api));
         messageHandler.registerMethod(new ExportReplayPack(api, trafficStore, replayPackService));
         messageHandler.registerMethod(new RunReplayPack(api, replayPackService));
-        messageHandler.registerMethod(new GetProxyHistoryItem(trafficStore));
+        messageHandler.registerMethod(new GetProxyHistoryItem(api, trafficStore));
         messageHandler.registerMethod(new GetEventLog(eventBus));
         messageHandler.registerMethod(new GetProxyInterceptState(api));
         api.logging().logToOutput("Registered 38 RPC methods (+3 event subscription RPCs)");

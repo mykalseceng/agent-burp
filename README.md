@@ -41,7 +41,7 @@ cd /path/to/agent-burp/burp-extension
 The JAR is created at:
 
 ```text
-burp-extension/build/libs/agent-burp-extension-1.4.0.jar
+burp-extension/build/libs/agent-burp-extension-1.4.1.jar
 ```
 
 Build the Go CLI:
@@ -57,7 +57,7 @@ go build -o agent-burp ./cmd/agent-burp
 1. Open Burp Suite.
 2. Go to Extensions > Installed.
 3. Click Add.
-4. Select `burp-extension/build/libs/agent-burp-extension-1.4.0.jar`.
+4. Select `burp-extension/build/libs/agent-burp-extension-1.4.1.jar`.
 5. Confirm the extension output shows `agent-burp extension loaded`.
 
 The extension opens a local WebSocket server on port `8198` by default. The Go daemon connects to that WebSocket directly; the TypeScript MCP server from the original bridge is not part of this repository and is not required.
@@ -90,6 +90,8 @@ Uninstall:
 ./agent-burp open --json
 ./agent-burp request --url https://example.com --json
 ./agent-burp history --domain example.com --limit 10 --json
+./agent-burp history --domain example.com --search "csrf" --json
+./agent-burp sitemap --domain example.com --search "csrf" --json
 ```
 
 ## Config

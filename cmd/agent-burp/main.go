@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version        = "1.4.0"
+	version        = "1.4.1"
 	exitOK         = 0
 	exitBadArgs    = 2
 	exitConnect    = 3
@@ -772,14 +772,15 @@ func runHistory(cfg config.Config, args []string, jsonMode bool, start time.Time
 	if status > 0 {
 		params["statusCode"] = status
 	}
+	if search != "" {
+		params["search"] = search
+		params["includeMessages"] = true
+	}
 	data, err := callBurp(cfg, "get_proxy_history", params)
 	if err != nil {
 		return err
 	}
 
-	if search != "" {
-		data = filterHistoryBySearch(data, search)
-	}
 	if compact {
 		data = compactHistory(data)
 	} else {
@@ -792,9 +793,10 @@ func runHistory(cfg config.Config, args []string, jsonMode bool, start time.Time
 func runSitemap(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
 	fs := flag.NewFlagSet("sitemap", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var domain string
+	var domain, search string
 	var includeParams bool
 	fs.StringVar(&domain, "domain", "", "domain filter")
+	fs.StringVar(&search, "search", "", "case-insensitive filter on request/response/notes")
 	fs.BoolVar(&includeParams, "include-params", true, "include parameters")
 	if err := fs.Parse(args); err != nil {
 		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
@@ -803,11 +805,15 @@ func runSitemap(cfg config.Config, args []string, jsonMode bool, start time.Time
 	if domain != "" {
 		params["domain"] = domain
 	}
+	if search != "" {
+		params["search"] = search
+		params["includeMessages"] = true
+	}
 	data, err := callBurp(cfg, "get_sitemap", params)
 	if err != nil {
 		return err
 	}
-	return printSuccess(jsonMode, "sitemap", data, start)
+	return printSuccess(jsonMode, "sitemap", redactSensitive(data), start)
 }
 
 func runScope(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
@@ -1857,59 +1863,6 @@ func lineDiff(a, b string) string {
 	return out.String()
 }
 
-func filterHistoryBySearch(data any, pattern string) any {
-	m, ok := data.(map[string]any)
-	if !ok {
-		return data
-	}
-	requests, ok := m["requests"].([]any)
-	if !ok {
-		return data
-	}
-	lowerPattern := strings.ToLower(pattern)
-	var filtered []any
-	for _, item := range requests {
-		if historyItemMatches(item, lowerPattern) {
-			filtered = append(filtered, item)
-		}
-	}
-	result := make(map[string]any, len(m))
-	for k, v := range m {
-		result[k] = v
-	}
-	result["requests"] = filtered
-	return result
-}
-
-func historyItemMatches(item any, lowerPattern string) bool {
-	rec, ok := item.(map[string]any)
-	if !ok {
-		return false
-	}
-	searchFields := []string{
-		"url", "requestBody", "responseBody",
-		"requestHeaders", "responseHeaders",
-	}
-	for _, field := range searchFields {
-		if v, ok := rec[field]; ok {
-			var text string
-			switch t := v.(type) {
-			case string:
-				text = t
-			default:
-				b, err := json.Marshal(t)
-				if err == nil {
-					text = string(b)
-				}
-			}
-			if strings.Contains(strings.ToLower(text), lowerPattern) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func compactHistory(data any) any {
 	m, ok := data.(map[string]any)
 	if !ok {
@@ -1919,7 +1872,7 @@ func compactHistory(data any) any {
 	if !ok {
 		return data
 	}
-	keepFields := []string{"id", "method", "url", "statusCode", "mimeType", "timestamp"}
+	keepFields := []string{"source", "id", "method", "url", "statusCode", "mimeType", "timestamp"}
 	var compacted []any
 	for _, item := range requests {
 		rec, ok := item.(map[string]any)
@@ -1955,7 +1908,7 @@ func truncateHistoryBodies(data any, headersOnly bool, maxBody int) any {
 	if !ok {
 		return data
 	}
-	bodyFields := []string{"requestBody", "responseBody"}
+	bodyFields := []string{"requestBody", "responseBody", "request", "response"}
 	var processed []any
 	for _, item := range requests {
 		rec, ok := item.(map[string]any)
@@ -2045,7 +1998,7 @@ Commands:
   event-log [--level info|error] [--limit N] [--search pattern]
   diff --id1 N --id2 N
   history [--compact] [--headers-only] [--max-body N] [--search pattern]
-  sitemap
+  sitemap [--search pattern]
   scope get|add|remove|suggest
   repeater
   intruder
