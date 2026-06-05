@@ -90,6 +90,7 @@ Uninstall:
 ./agent-burp open --json
 ./agent-burp request --url https://example.com --json
 ./agent-burp history --domain example.com --limit 10 --json
+./agent-burp history --item 4971 --json
 ./agent-burp history --domain example.com --search "csrf" --json
 ./agent-burp sitemap --domain example.com --search "csrf" --json
 ```

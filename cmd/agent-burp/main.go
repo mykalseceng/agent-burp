@@ -317,7 +317,7 @@ func runRequest(cfg config.Config, args []string, jsonMode bool, start time.Time
 	fs.StringVar(&method, "method", "", "HTTP method")
 	fs.Var(&headers, "header", "header K: V")
 	fs.Var(&replaceHeaders, "replace-header", "override header K: V")
-	fs.IntVar(&fromID, "from-id", 0, "replay from proxy history item ID")
+	fs.IntVar(&fromID, "from-id", 0, "replay proxy history item ID")
 	fs.StringVar(&body, "body", "", "body string")
 	fs.StringVar(&bodyFile, "body-file", "", "body file")
 	fs.BoolVar(&bodyStdin, "body-stdin", false, "read body from stdin")
@@ -749,10 +749,11 @@ func runHistory(cfg config.Config, args []string, jsonMode bool, start time.Time
 	fs := flag.NewFlagSet("history", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var domain, method, search string
-	var limit, status, maxBody int
+	var limit, status, maxBody, itemID int
 	var compact, headersOnly bool
 	fs.StringVar(&domain, "domain", "", "target domain")
 	fs.IntVar(&limit, "limit", 20, "max records")
+	fs.IntVar(&itemID, "item", 0, "print captured proxy history item ID without replaying")
 	fs.StringVar(&method, "method", "", "method filter")
 	fs.IntVar(&status, "status", 0, "status filter")
 	fs.BoolVar(&compact, "compact", false, "strip bodies, keep only key fields")
@@ -761,6 +762,13 @@ func runHistory(cfg config.Config, args []string, jsonMode bool, start time.Time
 	fs.StringVar(&search, "search", "", "case-insensitive filter on url/headers/body")
 	if err := fs.Parse(args); err != nil {
 		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+	}
+	if itemID > 0 {
+		data, err := callBurp(cfg, "get_proxy_history_item", map[string]any{"id": itemID})
+		if err != nil {
+			return err
+		}
+		return printSuccess(jsonMode, "history", redactSensitive(data), start)
 	}
 	if domain == "" {
 		return &appError{ExitCode: exitBadArgs, Code: "VALIDATION_ERROR", Message: "--domain required"}
@@ -1997,7 +2005,7 @@ Commands:
   events subscribe|unsubscribe|status
   event-log [--level info|error] [--limit N] [--search pattern]
   diff --id1 N --id2 N
-  history [--compact] [--headers-only] [--max-body N] [--search pattern]
+  history [--item N] [--compact] [--headers-only] [--max-body N] [--search pattern]
   sitemap [--search pattern]
   scope get|add|remove|suggest
   repeater
