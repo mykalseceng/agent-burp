@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version        = "1.4.1"
+	version        = "1.4.3"
 	exitOK         = 0
 	exitBadArgs    = 2
 	exitConnect    = 3
@@ -177,6 +177,8 @@ func run(start time.Time) error {
 		return runScan(cfg, sub, jsonMode, start)
 	case "issues":
 		return runIssues(cfg, sub, jsonMode, start)
+	case "collaborator":
+		return runCollaborator(cfg, sub, jsonMode, start)
 	case "rpc":
 		return runRPC(cfg, sub, jsonMode, start)
 	case "daemon":
@@ -1283,6 +1285,192 @@ func runIssues(cfg config.Config, args []string, jsonMode bool, start time.Time)
 	return printSuccess(jsonMode, "issues", redactSensitive(data), start)
 }
 
+func runCollaborator(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
+	if len(args) == 0 {
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "collaborator subcommand required"}
+	}
+
+	switch args[0] {
+	case "generate":
+		fs := flag.NewFlagSet("collaborator generate", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		var secretKey, customData string
+		var withoutServerLocation bool
+		fs.StringVar(&secretKey, "secret-key", "", "existing Collaborator client secret key")
+		fs.StringVar(&customData, "custom-data", "", "1-16 alphanumeric custom data")
+		fs.BoolVar(&withoutServerLocation, "without-server-location", false, "generate payload without server location")
+		if err := fs.Parse(args[1:]); err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+		}
+
+		params := map[string]any{}
+		if secretKey != "" {
+			params["secretKey"] = secretKey
+		}
+		if customData != "" {
+			params["customData"] = customData
+		}
+		if withoutServerLocation {
+			params["withoutServerLocation"] = true
+		}
+		data, err := callBurp(cfg, "collaborator_generate_payload", params)
+		if err != nil {
+			return err
+		}
+		if err := rememberCollaboratorClient(data); err != nil {
+			if m, ok := data.(map[string]any); ok {
+				m["localStateError"] = err.Error()
+			}
+		}
+		return printSuccess(jsonMode, "collaborator generate", redactSensitive(data), start)
+	case "interactions", "poll":
+		fs := flag.NewFlagSet("collaborator interactions", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		var secretKey, interactionID, payload string
+		var limit, offset int
+		fs.StringVar(&secretKey, "secret-key", "", "Collaborator client secret key")
+		fs.StringVar(&interactionID, "interaction-id", "", "interaction ID filter")
+		fs.StringVar(&payload, "payload", "", "payload filter")
+		fs.IntVar(&limit, "limit", 100, "limit")
+		fs.IntVar(&offset, "offset", 0, "offset")
+		if err := fs.Parse(args[1:]); err != nil {
+			return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+		}
+		if secretKey == "" {
+			record, err := findCollaboratorClient(payload)
+			if err != nil {
+				return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: err.Error()}
+			}
+			secretKey = record.SecretKey
+		}
+
+		params := map[string]any{"secretKey": secretKey, "limit": limit, "offset": offset}
+		if interactionID != "" {
+			params["interactionId"] = interactionID
+		}
+		if payload != "" {
+			params["payload"] = payload
+		}
+		data, err := callBurp(cfg, "collaborator_get_interactions", params)
+		if err != nil {
+			return err
+		}
+		return printSuccess(jsonMode, "collaborator interactions", redactSensitive(data), start)
+	default:
+		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "unknown collaborator subcommand: " + args[0]}
+	}
+}
+
+type collaboratorClientRecord struct {
+	SecretKey  string `json:"secretKey"`
+	Payload    string `json:"payload"`
+	ID         string `json:"id,omitempty"`
+	CustomData string `json:"customData,omitempty"`
+	CreatedAt  string `json:"createdAt"`
+}
+
+func rememberCollaboratorClient(data any) error {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return nil
+	}
+	secretKey, _ := m["secretKey"].(string)
+	payload, _ := m["payload"].(string)
+	if secretKey == "" || payload == "" {
+		return nil
+	}
+
+	record := collaboratorClientRecord{
+		SecretKey: secretKey,
+		Payload:   payload,
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+	if id, ok := m["id"].(string); ok {
+		record.ID = id
+	}
+	if customData, ok := m["customData"].(string); ok {
+		record.CustomData = customData
+	}
+
+	records, err := loadCollaboratorClients()
+	if err != nil {
+		return err
+	}
+	replaced := false
+	for i, existing := range records {
+		if existing.SecretKey == record.SecretKey || existing.Payload == record.Payload {
+			records[i] = record
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		records = append(records, record)
+	}
+	return saveCollaboratorClients(records)
+}
+
+func findCollaboratorClient(payload string) (collaboratorClientRecord, error) {
+	records, err := loadCollaboratorClients()
+	if err != nil {
+		return collaboratorClientRecord{}, err
+	}
+	if len(records) == 0 {
+		return collaboratorClientRecord{}, fmt.Errorf("--secret-key required; no saved Collaborator clients found")
+	}
+	if payload != "" {
+		for i := len(records) - 1; i >= 0; i-- {
+			if records[i].Payload == payload || strings.Contains(payload, records[i].Payload) || strings.Contains(records[i].Payload, payload) {
+				return records[i], nil
+			}
+		}
+		return collaboratorClientRecord{}, fmt.Errorf("--secret-key required; no saved Collaborator client matches payload")
+	}
+	return records[len(records)-1], nil
+}
+
+func loadCollaboratorClients() ([]collaboratorClientRecord, error) {
+	path, err := collaboratorClientsPath()
+	if err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return []collaboratorClientRecord{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var records []collaboratorClientRecord
+	if err := json.Unmarshal(b, &records); err != nil {
+		return nil, fmt.Errorf("failed to read saved Collaborator clients: %w", err)
+	}
+	return records, nil
+}
+
+func saveCollaboratorClients(records []collaboratorClientRecord) error {
+	path, err := collaboratorClientsPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(records, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o600)
+}
+
+func collaboratorClientsPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".agent-burp", "collaborator-clients.json"), nil
+}
+
 func runRPC(cfg config.Config, args []string, jsonMode bool, start time.Time) error {
 	if len(args) == 0 {
 		return &appError{ExitCode: exitBadArgs, Code: "BAD_ARGS", Message: "rpc method required"}
@@ -2013,6 +2201,7 @@ Commands:
   audit start|status|stop
   scan start|status|stop
   issues
+  collaborator generate|interactions
   rpc <method>
   daemon run|status|stop|restart|logs
 

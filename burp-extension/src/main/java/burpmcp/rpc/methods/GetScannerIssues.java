@@ -114,12 +114,9 @@ public class GetScannerIssues implements RpcMethod {
         map.put("requestResponses", requestResponses);
 
         // Collaborator interactions
-        List<Map<String, String>> interactions = new ArrayList<>();
+        List<Map<String, Object>> interactions = new ArrayList<>();
         for (var interaction : issue.collaboratorInteractions()) {
-            Map<String, String> inter = new HashMap<>();
-            inter.put("id", interaction.id().toString());
-            inter.put("timestamp", interaction.timeStamp().toString());
-            interactions.add(inter);
+            interactions.add(CollaboratorInteractionSerializer.serializeInteraction(interaction));
         }
         map.put("collaboratorInteractions", interactions);
 

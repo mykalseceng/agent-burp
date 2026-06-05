@@ -23,6 +23,7 @@ type WSClient struct {
 	timeout time.Duration
 
 	mu      sync.Mutex
+	writeMu sync.Mutex
 	conn    *websocket.Conn
 	pending map[string]*pendingCall
 	reqID   uint64
@@ -112,8 +113,11 @@ func (c *WSClient) Call(method string, params map[string]any, timeout time.Durat
 	c.mu.Unlock()
 
 	b, _ := json.Marshal(req)
+	c.writeMu.Lock()
 	_ = conn.SetWriteDeadline(time.Now().Add(timeout))
-	if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
+	err := conn.WriteMessage(websocket.TextMessage, b)
+	c.writeMu.Unlock()
+	if err != nil {
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()

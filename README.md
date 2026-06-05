@@ -41,7 +41,7 @@ cd /path/to/agent-burp/burp-extension
 The JAR is created at:
 
 ```text
-burp-extension/build/libs/agent-burp-extension-1.4.1.jar
+burp-extension/build/libs/agent-burp-extension-1.4.3.jar
 ```
 
 Build the Go CLI:
@@ -57,7 +57,7 @@ go build -o agent-burp ./cmd/agent-burp
 1. Open Burp Suite.
 2. Go to Extensions > Installed.
 3. Click Add.
-4. Select `burp-extension/build/libs/agent-burp-extension-1.4.1.jar`.
+4. Select `burp-extension/build/libs/agent-burp-extension-1.4.3.jar`.
 5. Confirm the extension output shows `agent-burp extension loaded`.
 
 The extension opens a local WebSocket server on port `8198` by default. The Go daemon connects to that WebSocket directly; the TypeScript MCP server from the original bridge is not part of this repository and is not required.
@@ -154,8 +154,29 @@ Env vars:
 - `audit start|status|stop`
 - `scan start|status|stop`
 - `issues`
+- `collaborator generate|interactions`
 - `rpc <method> --params <json|@file>`
 - `daemon run|status|stop|restart|logs`
+
+## Collaborator Workflow
+
+Generate a payload. The returned `secretKey` is also saved locally in
+`~/.agent-burp/collaborator-clients.json` for later polling:
+
+```bash
+./agent-burp collaborator generate --custom-data ABC123 --json
+```
+
+Poll for callbacks from the same Collaborator client:
+
+```bash
+./agent-burp collaborator interactions --secret-key <secretKey> --json
+```
+
+If `--secret-key` is omitted, the CLI uses the latest saved Collaborator client. If
+`--payload` is supplied, it uses the saved client that generated that payload.
+
+The raw RPC methods are `collaborator_generate_payload` and `collaborator_get_interactions`.
 
 ## Scanner workflow
 
